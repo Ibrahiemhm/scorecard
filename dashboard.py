@@ -3,6 +3,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import numpy as np
 
 # Page configuration
 st.set_page_config(
@@ -131,12 +132,29 @@ def load_updated_data():
 
     return df
 
+# Define milestones for scoring
+MILESTONES = ['SLA', 'Start Up Staff', 'Peer Learning', 'Orientation and AWPB',
+              'AWPB', 'COM', 'Full Staff - Others', 'LPIU Staffing', 'WF Staffing']
+
+# Calculate readiness score for each state
+def calculate_readiness_score(df):
+    """Calculate a readiness score (0-100) based on milestone completion"""
+    scores = []
+    for _, row in df.iterrows():
+        completed = sum(1 for m in MILESTONES if row.get(m) == 'Yes')
+        score = (completed / len(MILESTONES)) * 100
+        scores.append(score)
+    df['Readiness Score'] = scores
+    df['Milestones Completed'] = df[MILESTONES].apply(lambda x: (x == 'Yes').sum(), axis=1)
+    return df
+
 # Load data based on selection
 def load_data(file_choice):
     if file_choice == "Original Data (SANI.xlsx)":
-        return load_original_data()
+        df = load_original_data()
     else:
-        return load_updated_data()
+        df = load_updated_data()
+    return calculate_readiness_score(df)
 
 # Load data
 try:
@@ -221,6 +239,28 @@ try:
     with col5:
         completion_rate = (filtered_df['AWPB'] == 'Yes').sum() / len(filtered_df) * 100 if len(filtered_df) > 0 else 0
         st.metric("AWPB Completion", f"{completion_rate:.1f}%")
+
+    # Additional Summary Statistics (Feature 10)
+    st.markdown("###")
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        avg_readiness = filtered_df['Readiness Score'].mean() if len(filtered_df) > 0 else 0
+        st.metric("Avg. Readiness Score", f"{avg_readiness:.1f}%")
+
+    with col2:
+        fully_staffed = ((filtered_df['Start Up Staff'] == 'Yes') &
+                         (filtered_df['Full Staff - Others'] == 'Yes') &
+                         (filtered_df['LPIU Staffing'] == 'Yes')).sum()
+        st.metric("Fully Staffed", fully_staffed)
+
+    with col3:
+        avg_milestones = filtered_df['Milestones Completed'].mean() if len(filtered_df) > 0 else 0
+        st.metric("Avg. Milestones", f"{avg_milestones:.1f}/9")
+
+    with col4:
+        states_with_wag = (filtered_df['WAG Count'] > 0).sum()
+        st.metric("States with WAG", states_with_wag)
 
     st.markdown("---")
 
@@ -330,41 +370,367 @@ try:
 
         st.plotly_chart(fig, use_container_width=True)
 
-    # WAG Formation Analysis
+    # ===========================================
+    # NEW FEATURE 1: State Readiness Score Chart
+    # ===========================================
     st.markdown("---")
-    st.subheader("👥 WAG Formation by State")
+    st.subheader("🎯 State Readiness Score")
+    st.caption("Readiness score based on milestone completion (0-100%)")
+
+    # Sort by readiness score
+    readiness_df = filtered_df[['State', 'Readiness Score', 'Milestones Completed']].sort_values(
+        'Readiness Score', ascending=True
+    )
+
+    fig = go.Figure(data=[
+        go.Bar(
+            x=readiness_df['Readiness Score'],
+            y=readiness_df['State'],
+            orientation='h',
+            marker=dict(
+                color=readiness_df['Readiness Score'],
+                colorscale='RdYlGn',
+                showscale=True,
+                colorbar=dict(title="Score %")
+            ),
+            text=readiness_df['Readiness Score'].round(1).astype(str) + '%',
+            textposition='outside',
+            hovertemplate='<b>%{y}</b><br>Score: %{x:.1f}%<br>Milestones: %{customdata}/9<extra></extra>',
+            customdata=readiness_df['Milestones Completed']
+        )
+    ])
+
+    fig.update_layout(
+        height=max(400, len(readiness_df) * 25),
+        xaxis_title="Readiness Score (%)",
+        xaxis=dict(range=[0, 110]),
+        yaxis_title="",
+        margin=dict(l=150)
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+    # ===========================================
+    # NEW FEATURE 2: Progress Funnel Chart
+    # ===========================================
+    st.markdown("---")
+    st.subheader("📉 Implementation Progress Funnel")
+    st.caption("Shows how states progress through each milestone stage")
+
+    # Calculate funnel data - ordered by typical implementation sequence
+    funnel_milestones = ['SLA', 'Start Up Staff', 'Peer Learning', 'Orientation and AWPB',
+                         'AWPB', 'LPIU Staffing', 'COM', 'Full Staff - Others', 'WF Staffing']
+
+    funnel_data = []
+    for milestone in funnel_milestones:
+        count = (filtered_df[milestone] == 'Yes').sum()
+        funnel_data.append({'Stage': milestone, 'Count': count})
+
+    funnel_df = pd.DataFrame(funnel_data)
+
+    fig = go.Figure(go.Funnel(
+        y=funnel_df['Stage'],
+        x=funnel_df['Count'],
+        textposition="inside",
+        textinfo="value+percent initial",
+        marker=dict(color=['#3498db', '#2980b9', '#1abc9c', '#16a085',
+                          '#27ae60', '#2ecc71', '#f39c12', '#e67e22', '#e74c3c']),
+        connector=dict(line=dict(color="royalblue", dash="dot", width=3))
+    ))
+
+    fig.update_layout(
+        height=500,
+        title_text="States Completing Each Milestone"
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+    # ===========================================
+    # NEW FEATURE 4: State Comparison Radar Tool
+    # ===========================================
+    st.markdown("---")
+    st.subheader("🕸️ State Comparison Tool")
+    st.caption("Select states to compare their milestone completion")
+
+    # State selector for comparison
+    comparison_states = st.multiselect(
+        "Select states to compare (2-5 recommended)",
+        options=sorted(filtered_df['State'].unique()),
+        default=sorted(filtered_df['State'].unique())[:3] if len(filtered_df) >= 3 else list(filtered_df['State'].unique()),
+        max_selections=5
+    )
+
+    if len(comparison_states) >= 2:
+        radar_milestones = ['SLA', 'Start Up Staff', 'Peer Learning', 'AWPB',
+                           'COM', 'LPIU Staffing', 'WF Staffing']
+
+        fig = go.Figure()
+
+        colors = ['#3498db', '#e74c3c', '#2ecc71', '#f39c12', '#9b59b6']
+
+        for i, state in enumerate(comparison_states):
+            state_data = filtered_df[filtered_df['State'] == state].iloc[0]
+            values = [1 if state_data[m] == 'Yes' else 0 for m in radar_milestones]
+            values.append(values[0])  # Close the radar
+
+            fig.add_trace(go.Scatterpolar(
+                r=values,
+                theta=radar_milestones + [radar_milestones[0]],
+                fill='toself',
+                name=state,
+                line_color=colors[i % len(colors)],
+                opacity=0.7
+            ))
+
+        fig.update_layout(
+            polar=dict(
+                radialaxis=dict(visible=True, range=[0, 1], tickvals=[0, 1], ticktext=['No', 'Yes'])
+            ),
+            showlegend=True,
+            height=500,
+            legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5)
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Please select at least 2 states to compare.")
+
+    # ===========================================
+    # NEW FEATURE 3: Staffing Breakdown Chart
+    # ===========================================
+    st.markdown("---")
+    st.subheader("👔 Staffing Breakdown")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("**Staffing Status Overview**")
+
+        staffing_categories = ['Start Up Staff', 'Full Staff - Others', 'LPIU Staffing', 'WF Staffing']
+        staffing_data = []
+
+        for cat in staffing_categories:
+            yes_count = (filtered_df[cat] == 'Yes').sum()
+            no_count = (filtered_df[cat] == 'No').sum()
+            staffing_data.append({
+                'Category': cat,
+                'Filled': yes_count,
+                'Vacant': no_count
+            })
+
+        staffing_df = pd.DataFrame(staffing_data)
+
+        fig = go.Figure(data=[
+            go.Bar(name='Filled', x=staffing_df['Category'], y=staffing_df['Filled'], marker_color='#27ae60'),
+            go.Bar(name='Vacant', x=staffing_df['Category'], y=staffing_df['Vacant'], marker_color='#e74c3c')
+        ])
+
+        fig.update_layout(
+            barmode='group',
+            height=350,
+            xaxis_tickangle=-30,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+    with col2:
+        st.markdown("**Staffing Completion Rate**")
+
+        staffing_rates = []
+        for cat in staffing_categories:
+            rate = (filtered_df[cat] == 'Yes').sum() / len(filtered_df) * 100 if len(filtered_df) > 0 else 0
+            staffing_rates.append({'Category': cat, 'Rate': rate})
+
+        staffing_rate_df = pd.DataFrame(staffing_rates)
+
+        fig = go.Figure(go.Indicator(
+            mode="gauge+number",
+            value=staffing_rate_df['Rate'].mean(),
+            title={'text': "Average Staffing Rate"},
+            gauge={
+                'axis': {'range': [0, 100]},
+                'bar': {'color': "#3498db"},
+                'steps': [
+                    {'range': [0, 33], 'color': "#fadbd8"},
+                    {'range': [33, 66], 'color': "#fcf3cf"},
+                    {'range': [66, 100], 'color': "#d5f5e3"}
+                ],
+                'threshold': {
+                    'line': {'color': "red", 'width': 4},
+                    'thickness': 0.75,
+                    'value': 50
+                }
+            }
+        ))
+
+        fig.update_layout(height=350)
+        st.plotly_chart(fig, use_container_width=True)
+
+    # ===========================================
+    # NEW FEATURE 6: Disbursement vs Progress Correlation
+    # ===========================================
+    st.markdown("---")
+    st.subheader("💰 Disbursement vs Progress Correlation")
+    st.caption("Analyze relationship between disbursement and milestone completion")
+
+    fig = px.scatter(
+        filtered_df,
+        x='Disbursement (Million)',
+        y='Readiness Score',
+        size='Milestones Completed',
+        color='Entity Type',
+        hover_name='State',
+        hover_data=['Milestones Completed', 'SLA'],
+        color_discrete_map={'State': '#3498db', 'FCT': '#e74c3c', 'Federal': '#f39c12'},
+        size_max=20
+    )
+
+    # Add trend line
+    if len(filtered_df) > 2:
+        z = np.polyfit(filtered_df['Disbursement (Million)'], filtered_df['Readiness Score'], 1)
+        p = np.poly1d(z)
+        x_line = np.linspace(filtered_df['Disbursement (Million)'].min(),
+                            filtered_df['Disbursement (Million)'].max(), 100)
+        fig.add_trace(go.Scatter(x=x_line, y=p(x_line), mode='lines',
+                                name='Trend', line=dict(dash='dash', color='gray')))
+
+    fig.update_layout(
+        height=450,
+        xaxis_title="Disbursement (Million)",
+        yaxis_title="Readiness Score (%)",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+    # ===========================================
+    # NEW FEATURE 9: WAG Formation Leaders
+    # ===========================================
+    st.markdown("---")
+    st.subheader("🏆 WAG Formation Leaders")
 
     # Filter states with WAG data
     wag_df = filtered_df[filtered_df['WAG Count'] > 0].sort_values('WAG Count', ascending=False)
 
     if len(wag_df) > 0:
-        fig = px.bar(
-            wag_df,
-            x='State',
-            y='WAG Count',
-            color='WAG Count',
-            color_continuous_scale='Greens',
-            text='WAG Count'
-        )
+        col1, col2 = st.columns([2, 1])
 
-        fig.update_layout(
-            xaxis_tickangle=-45,
-            height=400,
-            showlegend=False
-        )
+        with col1:
+            fig = px.bar(
+                wag_df,
+                x='State',
+                y='WAG Count',
+                color='WAG Count',
+                color_continuous_scale='Greens',
+                text='WAG Count'
+            )
 
-        fig.update_traces(textposition='outside')
+            fig.update_layout(
+                xaxis_tickangle=-45,
+                height=400,
+                showlegend=False
+            )
 
-        st.plotly_chart(fig, use_container_width=True)
+            fig.update_traces(textposition='outside')
+            st.plotly_chart(fig, use_container_width=True)
+
+        with col2:
+            st.markdown("**Top WAG Performers**")
+            for i, (_, row) in enumerate(wag_df.head(5).iterrows(), 1):
+                medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
+                st.markdown(f"{medal} **{row['State']}**: {int(row['WAG Count'])} WAGs")
+
+            st.markdown("---")
+            st.metric("Total WAG Formations", f"{int(wag_df['WAG Count'].sum())}")
+            st.metric("States with WAGs", len(wag_df))
     else:
         st.info("No WAG Formation data available for selected states.")
+
+    # ===========================================
+    # NEW FEATURE 7: Gap Analysis Table
+    # ===========================================
+    st.markdown("---")
+    st.subheader("🔍 Gap Analysis")
+    st.caption("Identify missing milestones for each state")
+
+    # Create gap analysis data
+    gap_data = []
+    for _, row in filtered_df.iterrows():
+        missing = [m for m in MILESTONES if row[m] == 'No']
+        completed = [m for m in MILESTONES if row[m] == 'Yes']
+        gap_data.append({
+            'State': row['State'],
+            'Completed': len(completed),
+            'Missing': len(missing),
+            'Missing Milestones': ', '.join(missing) if missing else 'All Complete ✓',
+            'Readiness': row['Readiness Score']
+        })
+
+    gap_df = pd.DataFrame(gap_data).sort_values('Missing', ascending=False)
+
+    # Color code based on missing count
+    def highlight_gaps(row):
+        if row['Missing'] == 0:
+            return ['background-color: #d5f5e3'] * len(row)
+        elif row['Missing'] <= 3:
+            return ['background-color: #fcf3cf'] * len(row)
+        else:
+            return ['background-color: #fadbd8'] * len(row)
+
+    st.dataframe(
+        gap_df.style.apply(highlight_gaps, axis=1),
+        use_container_width=True,
+        height=400
+    )
+
+    # Gap summary
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        all_complete = (gap_df['Missing'] == 0).sum()
+        st.metric("Fully Complete", all_complete, help="States with all milestones completed")
+    with col2:
+        needs_attention = (gap_df['Missing'] > 5).sum()
+        st.metric("Needs Attention", needs_attention, help="States missing more than 5 milestones")
+    with col3:
+        most_common_gap = pd.Series([m for gaps in gap_df['Missing Milestones']
+                                     for m in gaps.split(', ') if m != 'All Complete ✓']).value_counts()
+        if len(most_common_gap) > 0:
+            st.metric("Most Common Gap", most_common_gap.index[0])
+
+    # ===========================================
+    # NEW FEATURE 8: Activity/Comments Feed
+    # ===========================================
+    st.markdown("---")
+    st.subheader("📝 Recent Activities & Comments")
+    st.caption("Latest updates and remarks from states")
+
+    # Filter states with comments
+    comments_df = filtered_df[filtered_df['Comment or Remark'].notna() &
+                              (filtered_df['Comment or Remark'].astype(str).str.strip() != '')]
+
+    if len(comments_df) > 0:
+        for _, row in comments_df.iterrows():
+            comment = str(row['Comment or Remark']).strip()
+            if comment and comment.lower() != 'nan':
+                with st.expander(f"📍 {row['State']} - Readiness: {row['Readiness Score']:.0f}%"):
+                    st.write(comment)
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.caption(f"SLA: {'✅' if row['SLA'] == 'Yes' else '❌'}")
+                    with col2:
+                        st.caption(f"AWPB: {'✅' if row['AWPB'] == 'Yes' else '❌'}")
+                    with col3:
+                        st.caption(f"Disbursement: ₦{row['Disbursement (Million)']}M")
+    else:
+        st.info("No comments or activities recorded for selected states.")
 
     # Data Table
     st.markdown("---")
     st.subheader("📋 Detailed State Data")
 
     # Select columns to display
-    display_columns = ['State', 'Entity Type', 'SLA', 'Disbursement (Million)', 'Start Up Staff',
+    display_columns = ['State', 'Entity Type', 'Readiness Score', 'SLA', 'Disbursement (Million)', 'Start Up Staff',
                       'Peer Learning', 'AWPB', 'COM', 'LPIU Staffing', 'WF Staffing',
                       'WAG Formation', 'Comment or Remark']
 
