@@ -15,9 +15,15 @@ st.set_page_config(
 st.title("📊 NFWP State Scorecard Dashboard")
 st.markdown("---")
 
-# Load and clean data
+# File options
+DATA_FILES = {
+    "Original Data (SANI.xlsx)": "Status NFWP SU STAFFING TO DO PLANS SANI.xlsx",
+    "Updated Data (updated.xlsx)": "updated.xlsx"
+}
+
+# Load and clean data - Original file format
 @st.cache_data
-def load_data():
+def load_original_data():
     file_path = 'Status NFWP SU STAFFING TO DO PLANS SANI.xlsx'
 
     # Read the scorecard sheet
@@ -41,6 +47,18 @@ def load_data():
     # Reset index
     df = df.reset_index(drop=True)
 
+    # Categorize entries: State, FCT, or Federal (for original file)
+    def categorize_entity(state_name):
+        state_lower = str(state_name).lower()
+        if state_lower in ['federal', 'federal coordinating unit', 'fcu']:
+            return 'Federal'
+        elif state_lower in ['fct', 'abuja', 'fc|abuja']:
+            return 'FCT'
+        else:
+            return 'State'
+
+    df['Entity Type'] = df['State'].apply(categorize_entity)
+
     # Convert Yes/No columns to standardized format
     yes_no_columns = ['SLA', 'Start Up Staff', 'Peer Learning', 'Orientation and AWPB',
                       'AWPB', 'COM', 'Full Staff - Others', 'LPIU Staffing', 'WF Staffing']
@@ -60,12 +78,93 @@ def load_data():
 
     return df
 
+# Load and clean data - Updated file format
+@st.cache_data
+def load_updated_data():
+    file_path = 'updated.xlsx'
+
+    # Read the sheet (data starts at row 1, header at row 0)
+    df = pd.read_excel(file_path, sheet_name='Sheet1')
+
+    # Rename columns to match expected format
+    df.columns = [
+        'S/N', 'State', 'SLA', 'Disbursement (Million)', 'Start Up Staff',
+        'Full Staff - Others', 'Peer Learning', 'Orientation and AWPB', 'AWPB',
+        'LGA', 'LPIU Staffing', 'COM', 'WF Staffing', 'WAG Formation', 'Comment or Remark'
+    ]
+
+    # Clean rows - keep only valid state data
+    df = df[df['State'].notna()]
+    df = df[df['S/N'].notna()]
+
+    # Reset index
+    df = df.reset_index(drop=True)
+
+    # Categorize entries: State, FCT, or Federal
+    def categorize_entity(state_name):
+        state_clean = str(state_name).strip().lower()
+        if state_clean in ['federal', 'federal coordinating unit', 'fcu']:
+            return 'Federal'
+        elif state_clean.startswith('fc|') or state_clean == 'fct' or state_clean == 'abuja':
+            return 'FCT'
+        else:
+            return 'State'
+
+    df['Entity Type'] = df['State'].apply(categorize_entity)
+
+    # Convert Yes/No columns to standardized format
+    yes_no_columns = ['SLA', 'Start Up Staff', 'Peer Learning', 'Orientation and AWPB',
+                      'AWPB', 'COM', 'Full Staff - Others', 'LPIU Staffing', 'WF Staffing']
+
+    for col in yes_no_columns:
+        if col in df.columns:
+            df[col] = df[col].fillna('No').astype(str).str.strip()
+            # Standardize: anything that's not clearly "No" or empty is considered "Yes"
+            df[col] = df[col].apply(lambda x: 'Yes' if x.lower() in ['yes', 'spc', 'po'] or (x != 'No' and x != '' and x != 'nan') else 'No')
+
+    # Clean disbursement column
+    df['Disbursement (Million)'] = pd.to_numeric(df['Disbursement (Million)'], errors='coerce').fillna(0)
+
+    # Try to extract WAG Formation numbers
+    df['WAG Formation'] = df['WAG Formation'].fillna('0').astype(str)
+    df['WAG Count'] = df['WAG Formation'].apply(lambda x: pd.to_numeric(x, errors='coerce') if x.replace('.', '').isdigit() else 0)
+
+    return df
+
+# Load data based on selection
+def load_data(file_choice):
+    if file_choice == "Original Data (SANI.xlsx)":
+        return load_original_data()
+    else:
+        return load_updated_data()
+
 # Load data
 try:
-    df = load_data()
+    # Sidebar - Data Source Selection
+    st.sidebar.header("📁 Data Source")
+    file_choice = st.sidebar.selectbox(
+        "Select Data File",
+        options=list(DATA_FILES.keys()),
+        index=1  # Default to updated data
+    )
+
+    df = load_data(file_choice)
 
     # Sidebar filters
     st.sidebar.header("🔍 Filters")
+
+    # Federal Coordinating Unit toggle
+    include_federal = st.sidebar.checkbox(
+        "Include Federal Coordinating Unit",
+        value=False,
+        help="Include the Federal Coordinating Unit in metrics and charts"
+    )
+
+    # Apply Federal filter first
+    if include_federal:
+        working_df = df.copy()
+    else:
+        working_df = df[df['Entity Type'] != 'Federal'].copy()
 
     # SLA filter
     sla_filter = st.sidebar.multiselect(
@@ -75,7 +174,7 @@ try:
     )
 
     # State filter
-    all_states = sorted(df['State'].unique())
+    all_states = sorted(working_df['State'].unique())
     selected_states = st.sidebar.multiselect(
         "Select States",
         options=all_states,
@@ -83,9 +182,9 @@ try:
     )
 
     # Apply filters
-    filtered_df = df[
-        (df['SLA'].isin(sla_filter)) &
-        (df['State'].isin(selected_states))
+    filtered_df = working_df[
+        (working_df['SLA'].isin(sla_filter)) &
+        (working_df['State'].isin(selected_states))
     ]
 
     # Key Metrics Row
@@ -93,11 +192,23 @@ try:
     col1, col2, col3, col4, col5 = st.columns(5)
 
     with col1:
-        st.metric("Total States", len(filtered_df))
+        # Count by entity type
+        state_count = (filtered_df['Entity Type'] == 'State').sum()
+        fct_count = (filtered_df['Entity Type'] == 'FCT').sum()
+        federal_count = (filtered_df['Entity Type'] == 'Federal').sum()
+
+        # Build the label
+        if include_federal and federal_count > 0:
+            label = f"{state_count} States + FCT + Federal"
+        else:
+            label = f"{state_count} States + FCT"
+
+        st.metric("Coverage", len(filtered_df), help=label)
+        st.caption(label)
 
     with col2:
         sla_yes = (filtered_df['SLA'] == 'Yes').sum()
-        st.metric("States with SLA", sla_yes)
+        st.metric("With SLA", sla_yes)
 
     with col3:
         total_disbursement = filtered_df['Disbursement (Million)'].sum()
@@ -253,7 +364,7 @@ try:
     st.subheader("📋 Detailed State Data")
 
     # Select columns to display
-    display_columns = ['State', 'SLA', 'Disbursement (Million)', 'Start Up Staff',
+    display_columns = ['State', 'Entity Type', 'SLA', 'Disbursement (Million)', 'Start Up Staff',
                       'Peer Learning', 'AWPB', 'COM', 'LPIU Staffing', 'WF Staffing',
                       'WAG Formation', 'Comment or Remark']
 
