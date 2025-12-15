@@ -16,11 +16,6 @@ st.set_page_config(
 st.title("📊 NFWP State Scorecard Dashboard")
 st.markdown("---")
 
-# File options
-DATA_FILES = {
-    "Original Data (SANI.xlsx)": "Status NFWP SU STAFFING TO DO PLANS SANI.xlsx",
-    "Updated Data (updated.xlsx)": "updated.xlsx"
-}
 
 # Load and clean data - Original file format
 @st.cache_data
@@ -158,15 +153,7 @@ def load_data(file_choice):
 
 # Load data
 try:
-    # Sidebar - Data Source Selection
-    st.sidebar.header("📁 Data Source")
-    file_choice = st.sidebar.selectbox(
-        "Select Data File",
-        options=list(DATA_FILES.keys()),
-        index=1  # Default to updated data
-    )
-
-    df = load_data(file_choice)
+    df = load_data("Updated Data (updated.xlsx)")
 
     # Sidebar filters
     st.sidebar.header("🔍 Filters")
